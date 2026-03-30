@@ -9,6 +9,8 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from .tools import SQLExecutorTools
+from .calculator_tools import CalculatorTools
+from .document_tools import DocumentTools
 
 
 # 创建 MCP Server 实例
@@ -16,6 +18,8 @@ server = Server("text2sql-server")
 
 # 创建工具实例
 sql_tools = SQLExecutorTools()
+calculator_tools = CalculatorTools()
+document_tools = DocumentTools()
 
 
 @server.list_tools()
@@ -78,6 +82,87 @@ async def list_tools() -> list[Tool]:
                 }
             }
         ),
+        # 计算器工具
+        Tool(
+            name="calculate",
+            description="执行数学计算，支持四则运算和百分比",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "数学表达式，如 '100 + 50 * 2' 或 '100 * 20%'"
+                    }
+                },
+                "required": ["expression"]
+            }
+        ),
+        # 文档工具
+        Tool(
+            name="read_file",
+            description="读取文件内容",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径（绝对路径或相对路径）"
+                    }
+                },
+                "required": ["path"]
+            }
+        ),
+        Tool(
+            name="write_file",
+            description="写入或追加文件内容",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "写入内容"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "写入模式：'write'（覆盖）或 'append'（追加）",
+                        "enum": ["write", "append"],
+                        "default": "write"
+                    }
+                },
+                "required": ["path", "content"]
+            }
+        ),
+        Tool(
+            name="edit_file",
+            description="编辑文件，替换指定文本",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径"
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "要替换的文本"
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "替换后的文本"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "是否替换所有匹配项，默认 false",
+                        "default": false
+                    }
+                },
+                "required": ["path", "old_text", "new_text"]
+            }
+        ),
     ]
 
 
@@ -119,6 +204,43 @@ async def dispatch_tool(name: str, arguments: dict[str, Any]) -> Any:
         case "explain_schema":
             table_name = arguments.get("table_name")
             return {"explanation": await sql_tools.explain_schema(table_name)}
+
+        # 计算器工具
+        case "calculate":
+            expression = arguments.get("expression")
+            if not expression:
+                return {"success": False, "error": "缺少参数: expression"}
+            return calculator_tools.calculate(expression)
+
+        # 文档工具
+        case "read_file":
+            path = arguments.get("path")
+            if not path:
+                return {"success": False, "error": "缺少参数: path"}
+            return await document_tools.read_file(path)
+
+        case "write_file":
+            path = arguments.get("path")
+            content = arguments.get("content")
+            mode = arguments.get("mode", "write")
+            if not path:
+                return {"success": False, "error": "缺少参数: path"}
+            if content is None:
+                return {"success": False, "error": "缺少参数: content"}
+            return await document_tools.write_file(path, content, mode)
+
+        case "edit_file":
+            path = arguments.get("path")
+            old_text = arguments.get("old_text")
+            new_text = arguments.get("new_text")
+            replace_all = arguments.get("replace_all", False)
+            if not path:
+                return {"success": False, "error": "缺少参数: path"}
+            if not old_text:
+                return {"success": False, "error": "缺少参数: old_text"}
+            if not new_text:
+                return {"success": False, "error": "缺少参数: new_text"}
+            return await document_tools.edit_file(path, old_text, new_text, replace_all)
 
         case _:
             return {"error": f"未知工具: {name}"}
