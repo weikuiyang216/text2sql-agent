@@ -129,7 +129,13 @@ text2sql exec "SELECT * FROM goods LIMIT 5" --db bakery_1
 
 ### Web API
 
-#### Text-to-SQL 端点
+#### 统一入口
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/unified/chat` | POST | 统一问答入口，自动路由 SQL/RAG/工具 |
+
+#### 其他端点
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -138,67 +144,46 @@ text2sql exec "SELECT * FROM goods LIMIT 5" --db bakery_1
 | `/database/switch` | POST | 切换数据库 |
 | `/schema` | GET | 获取 Schema |
 | `/sql/execute` | POST | 执行 SQL |
-
-#### RAG 端点
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/rag/chat` | POST | RAG 文档问答 |
 | `/rag/ingest` | POST | 摄入文档 |
 | `/rag/stats` | GET | 获取 RAG 统计 |
-| `/unified/chat` | POST | 统一问答（自动路由） |
-
-#### 通用工具端点
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/tools/calculate` | POST | 数学计算 |
-| `/tools/read_file` | POST | 读取文件 |
-| `/tools/write_file` | POST | 写入文件 |
-| `/tools/edit_file` | POST | 编辑文件 |
 
 #### API 示例
 
 ```bash
-# 自然语言 SQL 查询
+# 统一问答（自动路由 SQL/RAG/工具）
+curl -X POST http://localhost:8765/unified/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question": "找出所有价格低于5元的商品"}'
+
+# SQL 查询
 curl -X POST http://localhost:8765/chat \
   -H "Content-Type: application/json" \
   -d '{"question": "找出所有价格低于5元的商品", "database": "bakery_1"}'
 
 # RAG 文档问答
-curl -X POST http://localhost:8765/rag/chat \
+curl -X POST http://localhost:8765/unified/chat \
   -H "Content-Type: application/json" \
   -d '{"question": "住房贷款合同中关于提前还款的规定是什么？"}'
 
-# 统一问答（自动路由 SQL/RAG）
+# 数学计算
 curl -X POST http://localhost:8765/unified/chat \
   -H "Content-Type: application/json" \
-  -d '{"question": "个人住房贷款的利率是多少？"}'
+  -d '{"question": "帮我计算 100 * 20% + 50"}'
+
+# 文件操作
+curl -X POST http://localhost:8765/unified/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question": "读取 /tmp/test.txt 文件内容"}'
+
+# 混合操作
+curl -X POST http://localhost:8765/unified/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question": "查询商品总数并写入文件 /tmp/count.txt"}'
 
 # 摄入文档
 curl -X POST http://localhost:8765/rag/ingest \
   -H "Content-Type: application/json" \
   -d '{"reset": false}'
-
-# 数学计算
-curl -X POST http://localhost:8765/tools/calculate \
-  -H "Content-Type: application/json" \
-  -d '{"expression": "100 + 50 * 2"}'
-
-# 写入文件
-curl -X POST http://localhost:8765/tools/write_file \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/tmp/test.txt", "content": "Hello World\n"}'
-
-# 读取文件
-curl -X POST http://localhost:8765/tools/read_file \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/tmp/test.txt"}'
-
-# 编辑文件
-curl -X POST http://localhost:8765/tools/edit_file \
-  -H "Content-Type: application/json" \
-  -d '{"path": "/tmp/test.txt", "old_text": "Hello", "new_text": "Hi"}'
 ```
 
 
