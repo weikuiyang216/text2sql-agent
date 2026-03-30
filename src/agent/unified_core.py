@@ -1,9 +1,8 @@
-"""Unified Agent that combines Text2SQL and RAG capabilities."""
+"""Unified Agent with Function Calling support."""
 
-import asyncio
+import json
 import logging
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -11,82 +10,25 @@ from openai import AsyncOpenAI
 from ..config import config
 from ..mcp_client.client import MCPClient
 from .core import Text2SQLAgent
-from .prompts import build_system_prompt, build_user_prompt, extract_sql
+from .tools import get_tools
 from ..rag.pipeline import RAGPipeline, RAGResponse
+from ..mcp_server.calculator_tools import CalculatorTools
+from ..mcp_server.document_tools import DocumentTools
 
 logger = logging.getLogger(__name__)
 
 
-class QueryIntent(str, Enum):
-    """Query intent classification."""
-    SQL = "sql"           # Database query
-    RAG = "rag"           # Document query
-    HYBRID = "hybrid"     # Both SQL and RAG
-    GENERAL = "general"   # General chat
-
-
 @dataclass
 class UnifiedResponse:
-    """Unified response from the agent."""
+    """统一响应"""
     query: str
-    intent: QueryIntent
     answer: str
-    # SQL results (if applicable)
-    sql: str | None = None
-    sql_result: dict | None = None
-    # RAG results (if applicable)
-    rag_sources: list | None = None
-    citations: list | None = None
-    # Metadata
+    tool_calls: list[dict] = field(default_factory=list)
     success: bool = True
-    retries: int = 0
-
-
-class QueryRouter:
-    """Route queries to appropriate handlers."""
-
-    def __init__(self, llm: AsyncOpenAI, model: str):
-        self.llm = llm
-        self.model = model
-
-    async def classify_intent(self, question: str) -> QueryIntent:
-        """Classify the intent of a user query."""
-        prompt = f"""分析用户问题的意图，判断应该使用哪种查询方式。
-
-问题：{question}
-
-选项：
-A. SQL - 问题涉及数据库查询（如统计、筛选数据记录）
-B. RAG - 问题涉及文档内容查询（如合同条款、规定说明）
-C. HYBRID - 问题同时涉及数据库和文档
-D. GENERAL - 一般性问题，不需要查询
-
-只输出选项字母（A/B/C/D）："""
-
-        response = await self._call_llm(prompt)
-        response = response.strip().upper()
-
-        mapping = {
-            'A': QueryIntent.SQL,
-            'B': QueryIntent.RAG,
-            'C': QueryIntent.HYBRID,
-            'D': QueryIntent.GENERAL
-        }
-        return mapping.get(response, QueryIntent.GENERAL)
-
-    async def _call_llm(self, prompt: str) -> str:
-        """Call LLM with prompt."""
-        response = await self.llm.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=50
-        )
-        return response.choices[0].message.content or ""
 
 
 class UnifiedAgent:
-    """Unified agent supporting both SQL queries and document RAG."""
+    """统一 Agent，使用 Function Calling 自动路由请求"""
 
     def __init__(
         self,
@@ -106,6 +48,9 @@ class UnifiedAgent:
             api_key=self.api_key
         )
 
+        # 工具定义
+        self.tools = get_tools()
+
         # SQL Agent
         self.sql_agent = Text2SQLAgent(
             api_base=self.api_base,
@@ -117,8 +62,9 @@ class UnifiedAgent:
         # RAG Pipeline (lazy init)
         self._rag: RAGPipeline | None = None
 
-        # Query Router
-        self.router = QueryRouter(self.llm, self.model)
+        # 工具实例
+        self.calculator_tools = CalculatorTools()
+        self.document_tools = DocumentTools()
 
         # Current database
         self.current_db = config.DEFAULT_DATABASE
@@ -180,151 +126,153 @@ class UnifiedAgent:
         rag = await self._get_rag()
         return await rag.query(question, top_k=top_k, filters=filters)
 
+    # ==================== Tool Execution ====================
+
+    async def _execute_tool(self, name: str, arguments: dict) -> dict:
+        """执行工具调用"""
+        try:
+            match name:
+                # SQL 工具
+                case "execute_sql":
+                    return await self.sql_agent.execute_sql(arguments["sql"])
+                case "get_schema":
+                    return {"schema": await self.sql_agent.get_schema_text()}
+                case "switch_database":
+                    return await self.sql_agent.switch_database(arguments["db_name"])
+                case "list_databases":
+                    dbs = await self.sql_agent.list_databases()
+                    return {"databases": dbs, "count": len(dbs)}
+                # RAG 工具
+                case "rag_query":
+                    result = await self.rag_query(arguments["question"])
+                    return {
+                        "answer": result.answer,
+                        "sources": [
+                            {
+                                "content": s.content[:200] + "...",
+                                "doc_name": s.metadata.get("doc_name", ""),
+                                "score": s.combined_score
+                            }
+                            for s in result.sources[:5]
+                        ]
+                    }
+                # 计算器工具
+                case "calculate":
+                    return self.calculator_tools.calculate(arguments["expression"])
+                # 文档工具
+                case "read_file":
+                    return await self.document_tools.read_file(arguments["path"])
+                case "write_file":
+                    return await self.document_tools.write_file(
+                        arguments["path"],
+                        arguments["content"],
+                        arguments.get("mode", "write")
+                    )
+                case "edit_file":
+                    return await self.document_tools.edit_file(
+                        arguments["path"],
+                        arguments["old_text"],
+                        arguments["new_text"],
+                        arguments.get("replace_all", False)
+                    )
+                case _:
+                    return {"error": f"未知工具: {name}"}
+        except Exception as e:
+            return {"error": str(e)}
+
     # ==================== Unified Interface ====================
 
     async def chat(
         self,
         question: str,
-        intent: QueryIntent | None = None,
-        auto_route: bool = True
+        max_tool_calls: int = 10
     ) -> UnifiedResponse:
-        """Process user question with automatic routing.
+        """处理用户问题，使用 Function Calling 自动路由。
 
         Args:
-            question: User question
-            intent: Override intent (skip routing if provided)
-            auto_route: Whether to auto-route (default True)
+            question: 用户问题
+            max_tool_calls: 最大工具调用次数，默认 10
 
         Returns:
-            UnifiedResponse with results
+            UnifiedResponse 包含答案和工具调用历史
         """
-        # Classify intent if not provided
-        if intent is None and auto_route:
-            intent = await self.router.classify_intent(question)
-        elif intent is None:
-            intent = QueryIntent.GENERAL
+        messages: list[dict] = [{"role": "user", "content": question}]
+        tool_call_history: list[dict] = []
 
-        logger.info(f"Query intent: {intent.value}")
+        for iteration in range(max_tool_calls):
+            # 调用 LLM
+            response = await self.llm.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=self.tools,
+                tool_choice="auto"
+            )
 
-        # Route to appropriate handler
-        if intent == QueryIntent.SQL:
-            return await self._handle_sql(question)
-        elif intent == QueryIntent.RAG:
-            return await self._handle_rag(question)
-        elif intent == QueryIntent.HYBRID:
-            return await self._handle_hybrid(question)
-        else:
-            return await self._handle_general(question)
+            message = response.choices[0].message
 
-    async def _handle_sql(self, question: str) -> UnifiedResponse:
-        """Handle SQL query."""
-        result = await self.sql_agent.chat(question)
+            # 无工具调用，返回最终回答
+            if not message.tool_calls:
+                return UnifiedResponse(
+                    query=question,
+                    answer=message.content or "",
+                    tool_calls=tool_call_history,
+                    success=True
+                )
 
-        return UnifiedResponse(
-            query=question,
-            intent=QueryIntent.SQL,
-            answer=self._format_sql_answer(result),
-            sql=result.get("sql"),
-            sql_result=result.get("result"),
-            success=result.get("success", False),
-            retries=result.get("retries", 0)
-        )
+            # 将助手消息加入历史
+            messages.append({
+                "role": "assistant",
+                "content": message.content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in message.tool_calls
+                ]
+            })
 
-    async def _handle_rag(self, question: str) -> UnifiedResponse:
-        """Handle RAG query."""
-        rag = await self._get_rag()
-        result = await rag.query(question)
+            # 执行每个工具调用
+            for tool_call in message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
 
-        return UnifiedResponse(
-            query=question,
-            intent=QueryIntent.RAG,
-            answer=result.answer,
-            rag_sources=[
-                {
-                    "chunk_id": s.chunk_id,
-                    "content": s.content[:200] + "...",
-                    "score": s.combined_score,
-                    "doc_name": s.metadata.get("doc_name", "")
-                }
-                for s in result.sources
-            ],
-            citations=[
-                {
-                    "id": c.citation_id,
-                    "doc_name": c.doc_name,
-                    "pages": c.pages
-                }
-                for c in result.citations
-            ],
-            success=True
-        )
+                logger.info(f"Tool call: {tool_name}({tool_args})")
 
-    async def _handle_hybrid(self, question: str) -> UnifiedResponse:
-        """Handle hybrid query (both SQL and RAG)."""
-        # Run both in parallel
-        sql_task = self._handle_sql(question)
-        rag_task = self._handle_rag(question)
+                # 执行工具
+                result = await self._execute_tool(tool_name, tool_args)
 
-        sql_result, rag_result = await asyncio.gather(
-            sql_task, rag_task, return_exceptions=True
-        )
+                # 记录工具调用历史
+                tool_call_history.append({
+                    "tool": tool_name,
+                    "arguments": tool_args,
+                    "result": result
+                })
 
-        # Combine results
-        combined_answer = ""
+                # 工具结果加入消息历史
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": json.dumps(result, ensure_ascii=False)
+                })
 
-        if isinstance(sql_result, UnifiedResponse) and sql_result.success:
-            combined_answer += "**数据查询结果：**\n"
-            combined_answer += sql_result.answer + "\n\n"
-
-        if isinstance(rag_result, UnifiedResponse) and rag_result.success:
-            combined_answer += "**文档查询结果：**\n"
-            combined_answer += rag_result.answer
-
-        return UnifiedResponse(
-            query=question,
-            intent=QueryIntent.HYBRID,
-            answer=combined_answer,
-            sql=sql_result.sql if isinstance(sql_result, UnifiedResponse) else None,
-            sql_result=sql_result.sql_result if isinstance(sql_result, UnifiedResponse) else None,
-            rag_sources=rag_result.rag_sources if isinstance(rag_result, UnifiedResponse) else None,
-            citations=rag_result.citations if isinstance(rag_result, UnifiedResponse) else None,
-            success=True
-        )
-
-    async def _handle_general(self, question: str) -> UnifiedResponse:
-        """Handle general chat."""
-        response = await self.llm.chat.completions.create(
+        # 达到最大调用次数，强制生成回答
+        logger.warning(f"达到最大工具调用次数 {max_tool_calls}，强制生成回答")
+        final_response = await self.llm.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": question}],
-            temperature=0.7,
-            max_tokens=500
+            messages=messages + [{"role": "user", "content": "请基于以上信息给出最终回答。"}]
         )
 
         return UnifiedResponse(
             query=question,
-            intent=QueryIntent.GENERAL,
-            answer=response.choices[0].message.content or "",
+            answer=final_response.choices[0].message.content or "",
+            tool_calls=tool_call_history,
             success=True
         )
-
-    def _format_sql_answer(self, result: dict) -> str:
-        """Format SQL result as readable answer."""
-        if not result.get("success"):
-            return f"查询失败: {result.get('error', '未知错误')}"
-
-        sql_result = result.get("result", {})
-        rows = sql_result.get("rows", [])
-        row_count = sql_result.get("row_count", 0)
-
-        answer = f"执行SQL:\n```sql\n{result.get('sql', '')}\n```\n\n"
-        answer += f"查询到 {row_count} 条记录。\n"
-
-        if rows:
-            answer += "\n结果预览:\n"
-            for i, row in enumerate(rows[:5]):
-                answer += f"{i + 1}. {row}\n"
-
-        return answer
 
 
 # Convenience function
