@@ -146,3 +146,29 @@ test_database/{db_name}/
 - `pymilvus` - Milvus 向量数据库客户端
 - `pymupdf` - PDF 解析
 - `aiosqlite` - 异步 SQLite 操作
+
+## 扩展开发模式
+
+### 添加新的 MCP Tool
+
+1. 在 `src/mcp_server/tools.py` 中添加工具方法到 `SQLExecutorTools` 类
+2. 在 `src/mcp_server/server.py` 的 `list_tools()` 中注册 Tool 定义（包含 name、description、inputSchema）
+3. 在 `dispatch_tool()` 中添加 case 分发到对应方法
+
+工具方法应为 async 函数，返回 dict 格式结果。
+
+### 添加新的 RAG 组件
+
+RAG Pipeline 采用模块化设计，各组件可独立扩展：
+- `rag/ingestion/` - 添加新的文档解析器或分块策略
+- `rag/retrieval/` - 添加新的检索、重排序或查询处理逻辑
+- `rag/storage/` - 扩展向量存储实现
+
+新组件需在 `rag/pipeline.py` 中集成到主流程。
+
+### 添加新的 Agent 能力
+
+扩展 `UnifiedAgent` 时：
+- 在 `QueryIntent` 枚举中添加新意图类型
+- 在 `QueryRouter.classify_intent()` 中更新分类逻辑
+- 添加对应的 `_handle_xxx()` 处理方法
