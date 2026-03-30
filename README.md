@@ -172,6 +172,30 @@ curl -X POST http://localhost:8765/rag/ingest \
   -d '{"reset": false}'
 ```
 
+### MCP 工具测试示例
+
+```python
+import asyncio
+from src.mcp_server.calculator_tools import CalculatorTools
+from src.mcp_server.document_tools import DocumentTools
+
+async def test_tools():
+    # 计算器测试
+    calc = CalculatorTools()
+    print(calc.calculate("100 + 50 * 2"))   # {'success': True, 'result': 200, ...}
+    print(calc.calculate("100 * 20%"))      # {'success': True, 'result': 20.0, ...}
+    print(calc.calculate("100 / 0"))        # {'success': False, 'error': '除零错误'}
+
+    # 文档工具测试
+    doc = DocumentTools()
+    print(await doc.write_file("/tmp/test.txt", "Hello World\n"))
+    print(await doc.read_file("/tmp/test.txt"))
+    print(await doc.edit_file("/tmp/test.txt", "Hello", "Hi"))
+    print(await doc.read_file("/tmp/test.txt"))
+
+asyncio.run(test_tools())
+```
+
 ### MCP Server
 
 作为 MCP Server 使用：
