@@ -8,7 +8,6 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from ..config import config
-from ..mcp_client.client import MCPClient
 from .core import Text2SQLAgent
 from .tools import get_tools
 from ..rag.pipeline import RAGPipeline, RAGResponse
@@ -149,7 +148,7 @@ class UnifiedAgent:
                         "answer": result.answer,
                         "sources": [
                             {
-                                "content": s.content[:200] + "...",
+                                "content": s.content[:200] + "..." if len(s.content) > 200 else s.content,
                                 "doc_name": s.metadata.get("doc_name", ""),
                                 "score": s.combined_score
                             }
@@ -222,7 +221,7 @@ class UnifiedAgent:
             # 将助手消息加入历史
             messages.append({
                 "role": "assistant",
-                "content": message.content,
+                "content": message.content or "",
                 "tool_calls": [
                     {
                         "id": tc.id,
@@ -239,7 +238,11 @@ class UnifiedAgent:
             # 执行每个工具调用
             for tool_call in message.tool_calls:
                 tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
+                try:
+                    tool_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    tool_args = {}
+                    logger.error(f"Failed to parse tool arguments: {tool_call.function.arguments}")
 
                 logger.info(f"Tool call: {tool_name}({tool_args})")
 
