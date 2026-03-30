@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -198,51 +199,56 @@ class UnifiedAgent:
         messages: list[dict] = [{"role": "user", "content": question}]
         tool_call_history: list[dict] = []
 
+        # 构建系统提示，引导模型使用工具
+        system_prompt = """你是一个智能助手。当用户提问时：
+1. 如果需要使用工具，返回 JSON 格式：{"name": "工具名", "arguments": {参数}}
+2. 收到工具执行结果后，直接用自然语言回答用户问题，不要再返回 JSON
+
+可用工具：
+- list_databases: 列出所有数据库
+- get_schema: 获取数据库结构
+- switch_database: 切换数据库（参数: db_name）
+- execute_sql: 执行 SQL 查询（参数: sql）
+- rag_query: 文档问答（参数: question）
+- calculate: 数学计算（参数: expression）
+- read_file: 读取文件（参数: path）
+- write_file: 写入文件（参数: path, content, mode可选）
+- edit_file: 编辑文件（参数: path, old_text, new_text）
+
+重要：每条消息只能返回一个工具调用。收到结果后直接回答，不要继续调用工具。"""
+
+        messages.insert(0, {"role": "system", "content": system_prompt})
+
         for iteration in range(max_tool_calls):
             # 调用 LLM
             response = await self.llm.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                tools=self.tools,
-                tool_choice="auto"
+                temperature=0.1
             )
 
             message = response.choices[0].message
+            content = message.content or ""
+
+            # 尝试从文本中解析工具调用
+            tool_calls = self._parse_tool_calls_from_text(content)
 
             # 无工具调用，返回最终回答
-            if not message.tool_calls:
+            if not tool_calls:
                 return UnifiedResponse(
                     query=question,
-                    answer=message.content or "",
+                    answer=content,
                     tool_calls=tool_call_history,
                     success=True
                 )
 
             # 将助手消息加入历史
-            messages.append({
-                "role": "assistant",
-                "content": message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    }
-                    for tc in message.tool_calls
-                ]
-            })
+            messages.append({"role": "assistant", "content": content})
 
             # 执行每个工具调用
-            for tool_call in message.tool_calls:
-                tool_name = tool_call.function.name
-                try:
-                    tool_args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    tool_args = {}
-                    logger.error(f"Failed to parse tool arguments: {tool_call.function.arguments}")
+            for tool_call in tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call.get("arguments", {})
 
                 logger.info(f"Tool call: {tool_name}({tool_args})")
 
@@ -256,12 +262,14 @@ class UnifiedAgent:
                     "result": result
                 })
 
-                # 工具结果加入消息历史
+                # 工具结果加入消息历史，明确要求模型直接回答
                 messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": json.dumps(result, ensure_ascii=False)
+                    "role": "user",
+                    "content": f"工具执行结果：\n{json.dumps(result, ensure_ascii=False, indent=2)}\n\n请根据以上结果直接回答用户的问题，不要再调用工具。"
                 })
+
+                # 每次只执行一个工具调用，然后让模型决定是否继续
+                break
 
         # 达到最大调用次数，强制生成回答
         logger.warning(f"达到最大工具调用次数 {max_tool_calls}，强制生成回答")
@@ -276,6 +284,36 @@ class UnifiedAgent:
             tool_calls=tool_call_history,
             success=True
         )
+
+    def _parse_tool_calls_from_text(self, text: str) -> list[dict]:
+        """从文本中解析工具调用 JSON"""
+        tool_calls = []
+
+        # 匹配 ```json ... ``` 格式
+        json_pattern = r'```json\s*\n(.*?)\n```'
+        matches = re.findall(json_pattern, text, re.DOTALL)
+
+        for match in matches:
+            try:
+                data = json.loads(match.strip())
+                if isinstance(data, dict) and "name" in data:
+                    tool_calls.append(data)
+            except json.JSONDecodeError:
+                continue
+
+        # 如果没找到 JSON 块，尝试直接解析 JSON 对象
+        if not tool_calls:
+            # 匹配 {"name": "...", "arguments": {...}} 格式
+            obj_pattern = r'\{[^{}]*"name"\s*:\s*"[^"]+")[^{}]*\}'
+            for match in re.finditer(r'\{(?:[^{}]|(?:\{[^{}]*\}))*\}', text):
+                try:
+                    data = json.loads(match.group())
+                    if isinstance(data, dict) and "name" in data:
+                        tool_calls.append(data)
+                except json.JSONDecodeError:
+                    continue
+
+        return tool_calls
 
 
 # Convenience function
