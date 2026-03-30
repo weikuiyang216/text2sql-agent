@@ -57,6 +57,9 @@ Thumbs.db
 *.sqlite
 *.db
 
+# Data directory (PDF documents)
+data/
+
 # Large schema files (exceed GitHub limit)
 test_database/soccer_1/
 test_database/baseball_1/

@@ -1,4 +1,4 @@
-"""FastAPI Web Server for Text-to-SQL Agent."""
+"""FastAPI Web Server for Text-to-SQL Agent with RAG support."""
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -10,24 +10,31 @@ from pydantic import BaseModel
 
 from ..config import config
 from ..agent.core import Text2SQLAgent
+from ..agent.unified_core import UnifiedAgent, QueryIntent
+from ..rag.pipeline import RAGPipeline
 from ..mcp_client.session import session_manager
 
 
 # 全局 Agent 实例
 agent: Optional[Text2SQLAgent] = None
+unified_agent: Optional[UnifiedAgent] = None
+rag_pipeline: Optional[RAGPipeline] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    global agent
+    global agent, unified_agent, rag_pipeline
     # 启动时初始化
     agent = Text2SQLAgent()
     await agent._get_mcp()  # 预连接
+    unified_agent = UnifiedAgent()
     yield
     # 关闭时清理
     if agent:
         await agent.close()
+    if unified_agent:
+        await unified_agent.close()
 
 
 # 创建 FastAPI 应用
@@ -217,6 +224,145 @@ async def clear_history():
 
     agent.history.clear()
     return {"success": True, "message": "历史已清空"}
+
+
+# ===== RAG 请求/响应模型 =====
+
+class RAGChatRequest(BaseModel):
+    """RAG 聊天请求"""
+    question: str
+    top_k: Optional[int] = 10
+    filters: Optional[dict] = None
+
+
+class RAGChatResponse(BaseModel):
+    """RAG 聊天响应"""
+    query: str
+    answer: str
+    sources: list
+    citations: list
+
+
+class UnifiedChatRequest(BaseModel):
+    """统一聊天请求"""
+    question: str
+    intent: Optional[str] = None  # sql, rag, hybrid, general
+
+
+class UnifiedChatResponse(BaseModel):
+    """统一聊天响应"""
+    query: str
+    intent: str
+    answer: str
+    sql: Optional[str] = None
+    sql_result: Optional[dict] = None
+    rag_sources: Optional[list] = None
+    citations: Optional[list] = None
+    success: bool
+
+
+class IngestRequest(BaseModel):
+    """文档摄入请求"""
+    reset: bool = False
+
+
+class IngestResponse(BaseModel):
+    """文档摄入响应"""
+    success: bool
+    chunks_ingested: int
+    message: str
+
+
+# ===== RAG API 端点 =====
+
+@app.post("/rag/chat", response_model=RAGChatResponse)
+async def rag_chat(request: RAGChatRequest):
+    """RAG 文档问答"""
+    if not unified_agent:
+        raise HTTPException(status_code=503, detail="Agent 未初始化")
+
+    try:
+        result = await unified_agent.rag_query(
+            question=request.question,
+            top_k=request.top_k or 10,
+            filters=request.filters
+        )
+
+        return RAGChatResponse(
+            query=request.question,
+            answer=result.answer,
+            sources=result.sources,
+            citations=result.citations
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/unified/chat", response_model=UnifiedChatResponse)
+async def unified_chat(request: UnifiedChatRequest):
+    """统一问答（自动路由 SQL/RAG）"""
+    if not unified_agent:
+        raise HTTPException(status_code=503, detail="Agent 未初始化")
+
+    try:
+        # Parse intent if provided
+        intent = None
+        if request.intent:
+            intent = QueryIntent(request.intent)
+
+        result = await unified_agent.chat(
+            question=request.question,
+            intent=intent
+        )
+
+        return UnifiedChatResponse(
+            query=result.query,
+            intent=result.intent.value,
+            answer=result.answer,
+            sql=result.sql,
+            sql_result=result.sql_result,
+            rag_sources=result.rag_sources,
+            citations=result.citations,
+            success=result.success
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rag/ingest", response_model=IngestResponse)
+async def rag_ingest(request: IngestRequest):
+    """摄入文档到 RAG 系统"""
+    if not unified_agent:
+        raise HTTPException(status_code=503, detail="Agent 未初始化")
+
+    try:
+        count = await unified_agent.ingest_documents(reset=request.reset)
+
+        return IngestResponse(
+            success=True,
+            chunks_ingested=count,
+            message=f"成功摄入 {count} 个文档块"
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/rag/stats")
+async def rag_stats():
+    """获取 RAG 统计信息"""
+    if not unified_agent:
+        raise HTTPException(status_code=503, detail="Agent 未初始化")
+
+    try:
+        rag = await unified_agent._get_rag()
+        stats = await rag.get_stats()
+        return stats
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ===== 启动配置 =====

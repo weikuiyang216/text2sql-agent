@@ -24,6 +24,27 @@ class Config:
     DATABASE_DIR: Path = Path(os.getenv("DATABASE_DIR", "./test_database"))
     DEFAULT_DATABASE: str = os.getenv("DEFAULT_DATABASE", "bakery_1")
 
+    # Milvus 配置
+    MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
+    MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", "19530"))
+    MILVUS_COLLECTION_PREFIX: str = os.getenv("MILVUS_COLLECTION_PREFIX", "boc_contracts")
+
+    # Embedding 配置
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "dashscope")
+    EMBEDDING_API_BASE: str = os.getenv("EMBEDDING_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY", "")
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))
+
+    # RAG 配置
+    RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "10"))
+    RAG_RERANK_TOP_K: int = int(os.getenv("RAG_RERANK_TOP_K", "5"))
+    RAG_CHUNK_SIZE: int = int(os.getenv("RAG_CHUNK_SIZE", "800"))
+    RAG_CHUNK_OVERLAP: int = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
+
+    # 文档配置
+    DOCUMENT_DIR: Path = Path(os.getenv("DOCUMENT_DIR", "./data"))
+
     @classmethod
     def get_db_path(cls, db_name: str | None = None) -> Path:
         """获取数据库文件路径"""
