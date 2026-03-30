@@ -10,11 +10,9 @@ from pydantic import BaseModel
 
 from ..config import config
 from ..agent.core import Text2SQLAgent
-from ..agent.unified_core import UnifiedAgent, QueryIntent
+from ..agent.unified_core import UnifiedAgent
 from ..rag.pipeline import RAGPipeline
 from ..mcp_client.session import session_manager
-from ..mcp_server.calculator_tools import CalculatorTools
-from ..mcp_server.document_tools import DocumentTools
 
 
 # 全局 Agent 实例
@@ -248,18 +246,14 @@ class RAGChatResponse(BaseModel):
 class UnifiedChatRequest(BaseModel):
     """统一聊天请求"""
     question: str
-    intent: Optional[str] = None  # sql, rag, hybrid, general
+    max_tool_calls: int = 10
 
 
 class UnifiedChatResponse(BaseModel):
     """统一聊天响应"""
     query: str
-    intent: str
     answer: str
-    sql: Optional[str] = None
-    sql_result: Optional[dict] = None
-    rag_sources: Optional[list] = None
-    citations: Optional[list] = None
+    tool_calls: list[dict] = []
     success: bool
 
 
@@ -303,29 +297,20 @@ async def rag_chat(request: RAGChatRequest):
 
 @app.post("/unified/chat", response_model=UnifiedChatResponse)
 async def unified_chat(request: UnifiedChatRequest):
-    """统一问答（自动路由 SQL/RAG）"""
+    """统一问答（自动路由 SQL/RAG/工具）"""
     if not unified_agent:
         raise HTTPException(status_code=503, detail="Agent 未初始化")
 
     try:
-        # Parse intent if provided
-        intent = None
-        if request.intent:
-            intent = QueryIntent(request.intent)
-
         result = await unified_agent.chat(
             question=request.question,
-            intent=intent
+            max_tool_calls=request.max_tool_calls
         )
 
         return UnifiedChatResponse(
             query=result.query,
-            intent=result.intent.value,
             answer=result.answer,
-            sql=result.sql,
-            sql_result=result.sql_result,
-            rag_sources=result.rag_sources,
-            citations=result.citations,
+            tool_calls=result.tool_calls,
             success=result.success
         )
 
@@ -365,112 +350,6 @@ async def rag_stats():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ===== 通用工具请求/响应模型 =====
-
-class CalculateRequest(BaseModel):
-    """计算器请求"""
-    expression: str
-
-
-class CalculateResponse(BaseModel):
-    """计算器响应"""
-    success: bool
-    result: Optional[float] = None
-    expression: Optional[str] = None
-    error: Optional[str] = None
-
-
-class ReadFileRequest(BaseModel):
-    """读取文件请求"""
-    path: str
-
-
-class ReadFileResponse(BaseModel):
-    """读取文件响应"""
-    success: bool
-    content: Optional[str] = None
-    lines: Optional[int] = None
-    size: Optional[int] = None
-    path: Optional[str] = None
-    error: Optional[str] = None
-
-
-class WriteFileRequest(BaseModel):
-    """写入文件请求"""
-    path: str
-    content: str
-    mode: Optional[str] = "write"  # write 或 append
-
-
-class WriteFileResponse(BaseModel):
-    """写入文件响应"""
-    success: bool
-    message: Optional[str] = None
-    path: Optional[str] = None
-    mode: Optional[str] = None
-    error: Optional[str] = None
-
-
-class EditFileRequest(BaseModel):
-    """编辑文件请求"""
-    path: str
-    old_text: str
-    new_text: str
-    replace_all: Optional[bool] = False
-
-
-class EditFileResponse(BaseModel):
-    """编辑文件响应"""
-    success: bool
-    message: Optional[str] = None
-    changes: Optional[int] = None
-    path: Optional[str] = None
-    error: Optional[str] = None
-
-
-# ===== 通用工具 API 端点 =====
-
-calculator_tools = CalculatorTools()
-document_tools = DocumentTools()
-
-
-@app.post("/tools/calculate", response_model=CalculateResponse)
-async def tools_calculate(request: CalculateRequest):
-    """执行数学计算"""
-    result = calculator_tools.calculate(request.expression)
-    return CalculateResponse(**result)
-
-
-@app.post("/tools/read_file", response_model=ReadFileResponse)
-async def tools_read_file(request: ReadFileRequest):
-    """读取文件内容"""
-    result = await document_tools.read_file(request.path)
-    return ReadFileResponse(**result)
-
-
-@app.post("/tools/write_file", response_model=WriteFileResponse)
-async def tools_write_file(request: WriteFileRequest):
-    """写入文件"""
-    result = await document_tools.write_file(
-        request.path,
-        request.content,
-        request.mode or "write"
-    )
-    return WriteFileResponse(**result)
-
-
-@app.post("/tools/edit_file", response_model=EditFileResponse)
-async def tools_edit_file(request: EditFileRequest):
-    """编辑文件"""
-    result = await document_tools.edit_file(
-        request.path,
-        request.old_text,
-        request.new_text,
-        request.replace_all or False
-    )
-    return EditFileResponse(**result)
 
 
 # ===== 启动配置 =====
