@@ -1,74 +1,74 @@
-# Calculator and Document Tools Design
+# 计算器和文档工具设计文档
 
-## Overview
+## 概述
 
-Add two new MCP tools to support general-purpose operations:
-- **Calculator**: Basic mathematical calculations
-- **Document**: File read/write/edit operations
+添加两个新的 MCP 工具支持通用操作：
+- **计算器**：基础数学运算
+- **文档**：文件读写编辑操作
 
-## Requirements
+## 需求
 
-### Calculator Tool
-- Support basic arithmetic: `+`, `-`, `*`, `/`
-- Support percentage calculations
-- Support parentheses for grouping
-- Safe execution (no arbitrary code)
+### 计算器工具
+- 支持基础四则运算：`+`、`-`、`*`、`/`
+- 支持百分比运算
+- 支持括号分组
+- 安全执行（禁止任意代码）
 
-### Document Tool
-- Read file content with metadata
-- Write/append to files (auto-create directories)
-- Edit files (text replacement)
-- Allow operations on any path (no restrictions)
+### 文档工具
+- 读取文件内容及元数据
+- 写入/追加文件（自动创建目录）
+- 编辑文件（文本替换）
+- 允许任意路径操作（无限制）
 
-## Architecture
+## 架构
 
-### New Components
+### 新增组件
 
 ```
 src/mcp_server/
-├── tools.py              # SQLExecutorTools (existing)
-├── calculator_tools.py   # CalculatorTools (new)
-├── document_tools.py     # DocumentTools (new)
-└── server.py             # Register new tools (modified)
+├── tools.py              # SQLExecutorTools（现有）
+├── calculator_tools.py   # CalculatorTools（新增）
+├── document_tools.py     # DocumentTools（新增）
+└── server.py             # 注册新工具（修改）
 ```
 
-### Tool Definitions
+### 工具定义
 
 #### CalculatorTools
 
-| Method | Parameters | Returns |
-|--------|------------|---------|
+| 方法 | 参数 | 返回值 |
+|------|------|--------|
 | `calculate` | `expression: str` | `{success, result, expression}` |
 
-Input validation:
-- Allow: digits, `.`, `+`, `-`, `*`, `/`, `%`, `(`, `)`, spaces
-- Reject: letters, underscores, special characters
+输入验证：
+- 允许：数字、`.`、`+`、`-`、`*`、`/`、`%`、`(`、`)`、空格
+- 拒绝：字母、下划线、其他特殊字符
 
 #### DocumentTools
 
-| Method | Parameters | Returns |
-|--------|------------|---------|
+| 方法 | 参数 | 返回值 |
+|------|------|--------|
 | `read_file` | `path: str` | `{success, content, lines, size}` |
 | `write_file` | `path: str, content: str, mode: str` | `{success, message, path}` |
 | `edit_file` | `path: str, old_text: str, new_text: str, replace_all: bool` | `{success, message, changes}` |
 
-- `mode`: `"write"` (overwrite) or `"append"` (append)
-- `replace_all`: replace all occurrences (default: false)
+- `mode`：`"write"`（覆盖）或 `"append"`（追加）
+- `replace_all`：替换所有匹配项（默认 false）
 
-## Implementation Details
+## 实现细节
 
-### Calculator (Safe Evaluation)
+### 计算器（安全执行）
 
 ```python
 import re
 
 def calculate(self, expression: str) -> dict:
-    # Sanitize: only allow safe characters
+    # 仅允许安全字符
     if not re.match(r'^[\d\s\+\-\*/%\.\(\)]+$', expression):
-        return {"success": False, "error": "Invalid characters"}
+        return {"success": False, "error": "包含非法字符"}
 
     try:
-        # Replace % with /100 for percentage
+        # 将 % 替换为 /100 处理百分比
         expr = expression.replace('%', '/100')
         result = eval(expr, {"__builtins__": {}}, {})
         return {"success": True, "result": result, "expression": expression}
@@ -76,7 +76,7 @@ def calculate(self, expression: str) -> dict:
         return {"success": False, "error": str(e)}
 ```
 
-### Document Operations
+### 文档操作
 
 ```python
 async def read_file(self, path: str) -> dict:
@@ -103,7 +103,7 @@ async def write_file(self, path: str, content: str, mode: str = "write") -> dict
         else:
             p.write_text(content)
 
-        return {"success": True, "message": f"File written: {path}", "path": str(p)}
+        return {"success": True, "message": f"文件已写入: {path}", "path": str(p)}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -120,51 +120,51 @@ async def edit_file(self, path: str, old_text: str, new_text: str, replace_all: 
             content = content.replace(old_text, new_text, 1)
 
         p.write_text(content)
-        return {"success": True, "message": f"Replaced {count} occurrences", "changes": count}
+        return {"success": True, "message": f"已替换 {count} 处", "changes": count}
     except Exception as e:
         return {"success": False, "error": str(e)}
 ```
 
-### Server Registration (server.py)
+### Server 注册（server.py）
 
-Add to `list_tools()`:
-- `calculate` - with expression parameter
-- `read_file` - with path parameter
-- `write_file` - with path, content, mode parameters
-- `edit_file` - with path, old_text, new_text, replace_all parameters
+在 `list_tools()` 中添加：
+- `calculate` - 参数：expression
+- `read_file` - 参数：path
+- `write_file` - 参数：path、content、mode
+- `edit_file` - 参数：path、old_text、new_text、replace_all
 
-Add to `dispatch_tool()`:
-- Create instances of `CalculatorTools` and `DocumentTools`
-- Route tool calls to appropriate methods
+在 `dispatch_tool()` 中添加：
+- 创建 `CalculatorTools` 和 `DocumentTools` 实例
+- 分发工具调用到对应方法
 
-## Error Handling
+## 错误处理
 
-All methods return consistent error format:
+所有方法返回统一错误格式：
 ```json
 {
   "success": false,
-  "error": "Error description"
+  "error": "错误描述"
 }
 ```
 
-## Testing
+## 测试方式
 
-Manual testing via CLI:
+通过 CLI 手动测试：
 ```bash
-# Calculator
+# 计算器
 text2sql exec-tool calculate --expression "100 * 5 + 20%"
 
-# Document
+# 文档
 text2sql exec-tool read_file --path "/tmp/test.txt"
 text2sql exec-tool write_file --path "/tmp/test.txt" --content "Hello"
 text2sql exec-tool edit_file --path "/tmp/test.txt" --old "Hello" --new "World"
 ```
 
-## Files to Modify
+## 文件变更清单
 
-| File | Changes |
-|------|---------|
-| `src/mcp_server/calculator_tools.py` | New file |
-| `src/mcp_server/document_tools.py` | New file |
-| `src/mcp_server/server.py` | Register new tools, add dispatch |
-| `src/mcp_server/__init__.py` | Export new classes (optional) |
+| 文件 | 变更 |
+|------|------|
+| `src/mcp_server/calculator_tools.py` | 新建文件 |
+| `src/mcp_server/document_tools.py` | 新建文件 |
+| `src/mcp_server/server.py` | 注册新工具、添加分发逻辑 |
+| `src/mcp_server/__init__.py` | 导出新类（可选） |
