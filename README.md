@@ -19,6 +19,10 @@
 ### 接口支持
 - 📊 CLI 和 Web API 两种交互方式
 
+### 通用工具
+- 🔢 计算器工具：支持四则运算和百分比计算
+- 📄 文档工具：支持文件读取、写入、追加和编辑操作
+
 ## 安装
 
 ```bash
@@ -186,6 +190,10 @@ MCP Tools:
 | `get_schema_text` | 获取 Schema 文本描述 |
 | `execute_sql` | 执行 SQL |
 | `explain_schema` | 解释表结构 |
+| `calculate` | 执行数学计算（四则运算、百分比） |
+| `read_file` | 读取文件内容 |
+| `write_file` | 写入或追加文件 |
+| `edit_file` | 编辑文件（替换文本） |
 
 ## 项目结构
 
@@ -195,7 +203,9 @@ text2sql_agent/
 │   ├── config.py               # 配置管理
 │   ├── mcp_server/             # MCP Server 模块
 │   │   ├── server.py           # MCP Server 主程序
-│   │   └── tools.py            # SQL 执行工具
+│   │   ├── tools.py            # SQL 执行工具
+│   │   ├── calculator_tools.py # 计算器工具
+│   │   └── document_tools.py   # 文档操作工具
 │   ├── mcp_client/             # MCP Client 模块
 │   │   ├── client.py           # MCP Client 实现
 │   │   └── session.py          # 会话管理
@@ -281,6 +291,7 @@ text2sql_agent/
 - `click` - CLI 框架
 - `rich` - 终端美化
 - `aiosqlite` - 异步 SQLite
+- `aiofiles` - 异步文件操作
 
 ### RAG 依赖
 - `pymilvus` - Milvus 向量数据库
