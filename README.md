@@ -148,6 +148,15 @@ text2sql exec "SELECT * FROM goods LIMIT 5" --db bakery_1
 | `/rag/stats` | GET | 获取 RAG 统计 |
 | `/unified/chat` | POST | 统一问答（自动路由） |
 
+#### 通用工具端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/tools/calculate` | POST | 数学计算 |
+| `/tools/read_file` | POST | 读取文件 |
+| `/tools/write_file` | POST | 写入文件 |
+| `/tools/edit_file` | POST | 编辑文件 |
+
 #### API 示例
 
 ```bash
@@ -170,31 +179,28 @@ curl -X POST http://localhost:8765/unified/chat \
 curl -X POST http://localhost:8765/rag/ingest \
   -H "Content-Type: application/json" \
   -d '{"reset": false}'
+
+# 数学计算
+curl -X POST http://localhost:8765/tools/calculate \
+  -H "Content-Type: application/json" \
+  -d '{"expression": "100 + 50 * 2"}'
+
+# 写入文件
+curl -X POST http://localhost:8765/tools/write_file \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/tmp/test.txt", "content": "Hello World\n"}'
+
+# 读取文件
+curl -X POST http://localhost:8765/tools/read_file \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/tmp/test.txt"}'
+
+# 编辑文件
+curl -X POST http://localhost:8765/tools/edit_file \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/tmp/test.txt", "old_text": "Hello", "new_text": "Hi"}'
 ```
 
-### MCP 工具测试示例
-
-```python
-import asyncio
-from src.mcp_server.calculator_tools import CalculatorTools
-from src.mcp_server.document_tools import DocumentTools
-
-async def test_tools():
-    # 计算器测试
-    calc = CalculatorTools()
-    print(calc.calculate("100 + 50 * 2"))   # {'success': True, 'result': 200, ...}
-    print(calc.calculate("100 * 20%"))      # {'success': True, 'result': 20.0, ...}
-    print(calc.calculate("100 / 0"))        # {'success': False, 'error': '除零错误'}
-
-    # 文档工具测试
-    doc = DocumentTools()
-    print(await doc.write_file("/tmp/test.txt", "Hello World\n"))
-    print(await doc.read_file("/tmp/test.txt"))
-    print(await doc.edit_file("/tmp/test.txt", "Hello", "Hi"))
-    print(await doc.read_file("/tmp/test.txt"))
-
-asyncio.run(test_tools())
-```
 
 ### MCP Server
 
