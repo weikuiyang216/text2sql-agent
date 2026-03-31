@@ -1,6 +1,7 @@
 """CLI interface for Text-to-SQL Agent."""
 
 import asyncio
+import logging
 from typing import Optional
 
 import click
@@ -11,14 +12,22 @@ from rich.syntax import Syntax
 from rich.prompt import Prompt
 
 from ..config import config
+from ..logging_config import setup_logging, get_logger
 from ..agent.core import Text2SQLAgent
 
 
 console = Console()
+logger = get_logger(__name__)
 
 
 def run_async(coro):
     """运行异步函数"""
+    # Initialize logging before running
+    setup_logging(
+        level=config.LOG_LEVEL,
+        log_file=config.LOG_FILE,
+        rich_output=config.LOG_RICH_OUTPUT
+    )
     return asyncio.run(coro)
 
 
@@ -31,14 +40,24 @@ def cli():
 
 @cli.command()
 @click.option('--db', default=None, help='数据库名称')
-def chat(db: Optional[str]):
+@click.option('--verbose', '-v', is_flag=True, help='启用详细日志输出')
+def chat(db: Optional[str], verbose: bool):
     """启动交互式对话"""
+    # Setup logging with appropriate level
+    level = "DEBUG" if verbose else config.LOG_LEVEL
+    setup_logging(
+        level=level,
+        log_file=config.LOG_FILE,
+        rich_output=config.LOG_RICH_OUTPUT
+    )
+    logger.info(f"Starting chat with database: {db or config.DEFAULT_DATABASE}")
     run_async(_chat_async(db))
 
 
 async def _chat_async(db: Optional[str]):
     """交互式对话实现"""
     db_name = db or config.DEFAULT_DATABASE
+    logger.debug(f"Initializing agent with database: {db_name}")
 
     console.print(Panel.fit(
         "[bold blue]Text-to-SQL Agent[/bold blue]\n"
@@ -48,14 +67,17 @@ async def _chat_async(db: Optional[str]):
     ))
 
     agent = Text2SQLAgent()
+    logger.debug("Agent initialized")
 
     try:
         # 切换数据库
         if db_name != config.DEFAULT_DATABASE:
             result = await agent.switch_database(db_name)
             if not result.get("success"):
+                logger.error(f"Failed to switch database: {result.get('error')}")
                 console.print(f"[red]切换数据库失败: {result.get('error')}[/red]")
                 return
+            logger.info(f"Switched to database: {db_name}")
 
         while True:
             try:
@@ -105,8 +127,12 @@ async def _chat_async(db: Optional[str]):
                     continue
 
                 # 处理问题
+                logger.debug(f"Processing question: {question}")
                 with console.status("[bold green]生成 SQL...[/bold green]"):
                     result = await agent.chat(question, auto_fix=True, explain=True)
+
+                logger.debug(f"SQL generated: {result.get('sql', '')}")
+                logger.debug(f"Result success: {result.get('success', False)}")
 
                 # 显示 SQL
                 sql = result.get("sql", "")

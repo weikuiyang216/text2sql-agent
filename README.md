@@ -54,6 +54,16 @@ EMBEDDING_DIM=1024
 RAG_TOP_K=10
 RAG_RERANK_TOP_K=5
 DOCUMENT_DIR=./data
+
+# 日志配置
+LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
+LOG_FILE=               # 可选：日志文件路径，如 logs/app.log
+LOG_RICH_OUTPUT=true    # 控制台彩色输出
+
+# SQL 安全配置
+SQL_ALLOW_WRITE=false   # 是否允许 INSERT/UPDATE/DELETE（默认只读）
+SQL_MAX_ROWS=1000       # 查询结果最大行数
+SQL_TIMEOUT_SECONDS=30  # SQL 执行超时时间（秒）
 ```
 
 ## 快速开始
@@ -91,6 +101,9 @@ uvicorn src.api.server:app --host 0.0.0.0 --port 8765
 ```bash
 # 启动交互式对话
 text2sql chat --db bakery_1
+
+# 启动详细日志模式（调试）
+text2sql chat --db bakery_1 -v
 
 # 列出所有可用数据库
 text2sql list-db
@@ -183,9 +196,11 @@ MCP Tools:
 text2sql_agent/
 ├── src/
 │   ├── config.py               # 配置管理
+│   ├── logging_config.py       # 日志配置（Rich 彩色输出）
 │   ├── mcp_server/             # MCP Server 模块
 │   │   ├── server.py           # MCP Server 主程序
 │   │   ├── tools.py            # SQL 执行工具
+│   │   ├── sql_security.py     # SQL 安全验证（防注入）
 │   │   ├── calculator_tools.py # 计算器工具
 │   │   └── document_tools.py   # 文档操作工具
 │   ├── mcp_client/             # MCP Client 模块
@@ -254,6 +269,45 @@ text2sql_agent/
 | 文件 | `write_file` | 写入文件 |
 | 文件 | `edit_file` | 编辑文件 |
 
+## 安全机制
+
+### SQL 安全
+
+`src/mcp_server/sql_security.py` 提供多层安全保护：
+
+| 保护措施 | 说明 | 默认值 |
+|----------|------|--------|
+| 语句类型限制 | 默认只允许 SELECT，禁止 INSERT/UPDATE/DELETE | 只读 |
+| 危险操作阻止 | 禁止 DROP/ALTER/CREATE/TRUNCATE/GRANT | 启用 |
+| 多语句阻止 | 防止 `SELECT * FROM t; DROP TABLE t;` 注入 | 启用 |
+| 注释过滤 | 阻止 `--` 和 `/* */` 注释注入 | 启用 |
+| 系统表保护 | 禁止访问 `sqlite_master` 等系统表 | 启用 |
+| 结果行数限制 | 防止大量数据泄露 | 1000 行 |
+| 执行超时 | 防止长时间运行的查询 | 30 秒 |
+
+**配置选项**：
+
+```env
+SQL_ALLOW_WRITE=false    # 是否允许写操作（INSERT/UPDATE/DELETE）
+SQL_MAX_ROWS=1000        # 查询结果最大行数
+SQL_TIMEOUT_SECONDS=30   # SQL 执行超时时间（秒）
+```
+
+**示例**：
+
+```python
+from src.mcp_server.tools import SQLExecutorTools
+
+# 默认只读模式
+tools = SQLExecutorTools()
+await tools.execute_sql("SELECT * FROM goods")  # ✓ 允许
+await tools.execute_sql("DELETE FROM goods")    # ✗ 拒绝
+
+# 允许写操作
+tools = SQLExecutorTools(allow_write=True)
+await tools.execute_sql("INSERT INTO goods VALUES (...)")  # ✓ 允许
+```
+
 ## 依赖
 
 ### 核心依赖
@@ -261,7 +315,7 @@ text2sql_agent/
 - `openai` - OpenAI API 客户端
 - `fastapi` - Web 框架
 - `click` - CLI 框架
-- `rich` - 终端美化
+- `rich` - 终端美化、日志彩色输出
 - `aiosqlite` - 异步 SQLite
 - `aiofiles` - 异步文件操作
 
@@ -270,6 +324,35 @@ text2sql_agent/
 - `pymupdf` - PDF 解析
 - `tiktoken` - Token 计数
 - `tqdm` - 进度条
+
+## 调试
+
+### 日志配置
+
+项目使用 Rich 库提供彩色日志输出：
+
+```env
+LOG_LEVEL=INFO          # 日志级别：DEBUG, INFO, WARNING, ERROR
+LOG_FILE=               # 可选：日志文件路径，如 logs/app.log
+LOG_RICH_OUTPUT=true    # 控制台彩色输出
+```
+
+### CLI 调试模式
+
+```bash
+# 启动交互式对话（详细日志）
+text2sql chat --db bakery_1 -v
+```
+
+### 日志输出示例
+
+```
+[03/31/26 14:10:47] INFO     Logging initialized: level=DEBUG
+                    INFO     SQL executor initialized: write_mode=False
+                    DEBUG    Processing question: 查询所有商品
+                    DEBUG    SQL generated: SELECT * FROM goods
+                    INFO     SQL executed successfully: 15 rows
+```
 
 ## License
 

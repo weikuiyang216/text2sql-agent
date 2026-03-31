@@ -4,26 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-Text-to-SQL Agent 是基于 MCP (Model Context Protocol) 架构的智能助手，支持：
+Text-to-SQL Agent 是基于 MCP (Model Context Protocol) 架构的智能助手，核心特性：
+- **统一入口**: `/unified/chat` 使用 Function Calling 自动路由 SQL/RAG/计算器/文件操作
 - **Text-to-SQL**: 自然语言转 SQL 查询，支持多数据库切换和 SQL 错误自动修复
 - **Agentic RAG**: PDF 文档智能问答，支持向量检索和引用溯源
-- **统一接口**: 自动路由 SQL/RAG 查询的混合查询
+- **Agent 循环模式**: LLM 自动判断是否需要调用工具，复杂任务自动分解
 
 ## 常用命令
 
-### 安装与配置
 ```bash
+# 安装
 pip install -e .
-```
 
-配置文件 `.env` 需要设置：
-- `OPENAI_API_BASE` / `OPENAI_API_KEY` / `DEFAULT_MODEL` - LLM 配置
-- `DATABASE_DIR` / `DEFAULT_DATABASE` - 数据库配置
-- `MILVUS_HOST` / `MILVUS_PORT` - Milvus 向量数据库（RAG 功能）
-
-### 启动服务
-
-```bash
 # 启动 Milvus（RAG 功能需要）
 docker-compose up -d
 
@@ -39,136 +31,123 @@ python -m src.mcp_server.server
 ### CLI 命令
 
 ```bash
-# 交互式对话
-text2sql chat --db bakery_1
-
-# 列出数据库
-text2sql list-db
-
-# 显示 Schema
-text2sql schema --db bakery_1
-
-# 执行 SQL
-text2sql exec "SELECT * FROM goods LIMIT 5" --db bakery_1
+text2sql chat --db bakery_1    # 交互式对话
+text2sql list-db               # 列出数据库
+text2sql schema --db bakery_1  # 显示 Schema
+text2sql exec "SELECT * FROM goods LIMIT 5" --db bakery_1  # 执行 SQL
 ```
 
 ### 文档摄入（RAG）
 
 ```bash
-# 摄入所有 PDF
-python scripts/ingest_documents.py
-
-# 重置集合并重新摄入
-python scripts/ingest_documents.py --reset
-
-# 摄入单个文件
-python scripts/ingest_documents.py --file data/合同.pdf
+python scripts/ingest_documents.py           # 摄入所有 PDF
+python scripts/ingest_documents.py --reset   # 重置集合并重新摄入
+python scripts/ingest_documents.py --file data/合同.pdf  # 单个文件
 ```
 
 ## 架构
 
-### 核心模块结构
+### 核心模块
 
 ```
 src/
 ├── config.py           # 配置管理（环境变量加载）
+├── logging_config.py   # 日志配置（Rich 控制台输出）
 ├── mcp_server/         # MCP Server - 提供 SQL 执行工具
 │   ├── server.py       # MCP Server 主程序
-│   └── tools.py        # SQL 执行工具（SQLExecutorTools）
+│   ├── tools.py        # SQL 执行工具
+│   ├── sql_security.py # SQL 安全验证（防注入）
+│   ├── calculator_tools.py  # 计算器工具
+│   └── document_tools.py    # 文件操作工具
 ├── mcp_client/         # MCP Client - 与 MCP Server 通信
-│   ├── client.py       # MCP Client 实现
-│   └── session.py      # 会话管理
 ├── agent/              # Agent 核心
 │   ├── core.py         # Text2SQLAgent - SQL 生成与执行
-│   ├── unified_core.py # UnifiedAgent - SQL + RAG 统一入口
+│   ├── unified_core.py # UnifiedAgent - 统一入口（Function Calling）
+│   ├── tools.py        # 工具定义注册表（OpenAI Function Calling 格式）
 │   ├── prompts.py      # Prompt 模板
 │   └── history.py      # 对话历史
 ├── rag/                # RAG 模块
 │   ├── pipeline.py     # RAGPipeline - 主流程编排
-│   ├── ingestion/      # 数据摄入（PDF 解析、分块）
-│   ├── retrieval/      # 检索模块（查询重写、多路检索、重排序、引用溯源）
+│   ├── ingestion/      # 数据摄入
+│   ├── retrieval/      # 检索模块
 │   ├── storage/        # 向量存储（Milvus）
 │   └── embeddings/     # Embedding 客户端
 ├── api/server.py       # FastAPI Web 服务
 └── cli/main.py         # Click CLI 接口
 ```
 
-### 关键架构模式
-
-1. **MCP 架构**: Agent 通过 MCP Client 调用 MCP Server 提供的工具（`list_databases`, `switch_database`, `get_schema`, `execute_sql`）
-
-2. **SQL Agent 流程** (`agent/core.py`):
-   - 获取 Schema → 构建 Prompt → LLM 生成 SQL → 执行 SQL → 错误自动修复（最多 3 次）
-
-3. **RAG Pipeline 流程** (`rag/pipeline.py`):
-   - PDF 解析 → 文档分块 → Embedding → Milvus 存储
-   - 查询重写 → 多路检索 → 重排序 → 生成答案 → 引用溯源
-
-4. **统一 Agent** (`agent/unified_core.py`):
-   - `QueryRouter` 分类意图（SQL/RAG/HYBRID/GENERAL）
-   - 根据意图路由到对应处理器
-
-5. **懒加载模式**: MCP Client 和 RAG Pipeline 都采用懒加载，首次使用时初始化
-
-### 数据流
+### Agent 循环流程（UnifiedAgent）
 
 ```
-用户问题 → UnifiedAgent.chat()
-         → QueryRouter.classify_intent()
-         → SQL: Text2SQLAgent.chat() → MCPClient → SQLExecutorTools
-         → RAG: RAGPipeline.query() → Milvus
-         → HYBRID: 并行执行两者
+用户问题 → LLM 判断是否需要工具
+         → 需要工具：执行工具 → 结果加入上下文 → 返回 LLM（循环）
+         → 不需要工具：返回最终回答
 ```
+
+关键实现细节：
+- `_parse_tool_calls_from_text()` 解析文本中的 JSON 工具调用（支持 ``json 块和裸 JSON）
+- 工具定义在 `agent/tools.py` 的 `TOOLS` 列表中集中管理
+- 工具执行在 `unified_core.py` 的 `_execute_tool()` 方法中分发
+
+### 可用工具
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| SQL | `execute_sql` / `get_schema` / `switch_database` / `list_databases` | 数据库操作 |
+| RAG | `rag_query` | 文档问答 |
+| 计算 | `calculate` | 数学计算（四则运算、百分比） |
+| 文件 | `read_file` / `write_file` / `edit_file` | 文件操作 |
 
 ### 测试数据库
 
-`test_database/` 包含 200+ 个 SQLite 测试数据库，每个数据库目录结构：
+`test_database/` 包含 200+ 个 SQLite 测试数据库：
 ```
 test_database/{db_name}/
 ├── {db_name}.sqlite   # SQLite 数据库文件
 └── schema.sql         # Schema 定义
 ```
 
-## API 端点
+## 扩展开发
 
-- `POST /chat` - Text-to-SQL 查询
-- `POST /rag/chat` - RAG 文档问答
-- `POST /unified/chat` - 统一问答（自动路由）
-- `GET /databases` - 列出数据库
-- `POST /database/switch` - 切换数据库
-- `GET /schema` - 获取 Schema
-- `POST /rag/ingest` - 摄入文档
+### 添加新工具
 
-## 依赖说明
-
-- `mcp` - Model Context Protocol SDK
-- `openai` - OpenAI 兼容 API 客户端（支持 Ollama/vLLM 等本地 LLM）
-- `pymilvus` - Milvus 向量数据库客户端
-- `pymupdf` - PDF 解析
-- `aiosqlite` - 异步 SQLite 操作
-
-## 扩展开发模式
-
-### 添加新的 MCP Tool
-
-1. 在 `src/mcp_server/tools.py` 中添加工具方法到 `SQLExecutorTools` 类
-2. 在 `src/mcp_server/server.py` 的 `list_tools()` 中注册 Tool 定义（包含 name、description、inputSchema）
-3. 在 `dispatch_tool()` 中添加 case 分发到对应方法
-
-工具方法应为 async 函数，返回 dict 格式结果。
+1. 在 `src/agent/tools.py` 的 `TOOLS` 列表中添加工具定义（OpenAI Function Calling 格式）
+2. 在 `src/agent/unified_core.py` 的 `_execute_tool()` 方法中添加 case 分发
+3. 实际执行逻辑可在 `src/mcp_server/` 下新建或使用现有工具类
 
 ### 添加新的 RAG 组件
 
-RAG Pipeline 采用模块化设计，各组件可独立扩展：
-- `rag/ingestion/` - 添加新的文档解析器或分块策略
-- `rag/retrieval/` - 添加新的检索、重排序或查询处理逻辑
-- `rag/storage/` - 扩展向量存储实现
+RAG Pipeline 采用模块化设计，各组件在 `rag/` 子目录中独立扩展，需在 `pipeline.py` 中集成。
 
-新组件需在 `rag/pipeline.py` 中集成到主流程。
+## 配置
 
-### 添加新的 Agent 能力
+`.env` 文件关键配置：
+- `OPENAI_API_BASE` / `OPENAI_API_KEY` / `DEFAULT_MODEL` - LLM 配置
+- `DATABASE_DIR` / `DEFAULT_DATABASE` - 数据库配置
+- `MILVUS_HOST` / `MILVUS_PORT` - Milvus 向量数据库
+- `EMBEDDING_PROVIDER` / `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` - Embedding 配置
+- `LOG_LEVEL` / `LOG_FILE` - 日志配置
+- `SQL_ALLOW_WRITE` / `SQL_MAX_ROWS` / `SQL_TIMEOUT_SECONDS` - SQL 安全配置
 
-扩展 `UnifiedAgent` 时：
-- 在 `QueryIntent` 枚举中添加新意图类型
-- 在 `QueryRouter.classify_intent()` 中更新分类逻辑
-- 添加对应的 `_handle_xxx()` 处理方法
+## SQL 安全机制
+
+`src/mcp_server/sql_security.py` 实现 SQL 安全验证：
+
+**默认只读模式**（`SQL_ALLOW_WRITE=false`）：
+- 只允许 SELECT 语句
+- 禁止 INSERT/UPDATE/DELETE/DROP/ALTER 等写操作
+
+**防注入保护**：
+- 禁止多条语句执行（`SELECT * FROM t; DROP TABLE t;`）
+- 禁止 SQL 注释（`--` 和 `/* */`）
+- 禁止访问系统表（`sqlite_master`）
+- 结果行数限制（默认 1000 行）
+- 执行超时限制（默认 30 秒）
+
+## 依赖
+
+- `mcp` - Model Context Protocol SDK
+- `openai` - OpenAI 兼容 API 客户端
+- `pymilvus` - Milvus 向量数据库
+- `pymupdf` - PDF 解析
+- `aiosqlite` - 异步 SQLite

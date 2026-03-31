@@ -45,6 +45,16 @@ class Config:
     # 文档配置
     DOCUMENT_DIR: Path = Path(os.getenv("DOCUMENT_DIR", "./data"))
 
+    # 日志配置
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FILE: Path | None = Path(os.getenv("LOG_FILE", "")) if os.getenv("LOG_FILE") else None
+    LOG_RICH_OUTPUT: bool = os.getenv("LOG_RICH_OUTPUT", "true").lower() == "true"
+
+    # SQL 安全配置
+    SQL_ALLOW_WRITE: bool = os.getenv("SQL_ALLOW_WRITE", "false").lower() == "true"
+    SQL_MAX_ROWS: int = int(os.getenv("SQL_MAX_ROWS", "1000"))
+    SQL_TIMEOUT_SECONDS: float = float(os.getenv("SQL_TIMEOUT_SECONDS", "30.0"))
+
     @classmethod
     def get_db_path(cls, db_name: str | None = None) -> Path:
         """获取数据库文件路径"""

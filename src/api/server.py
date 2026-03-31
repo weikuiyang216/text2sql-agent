@@ -9,10 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ..config import config
+from ..logging_config import setup_logging
 from ..agent.core import Text2SQLAgent
 from ..agent.unified_core import UnifiedAgent
 from ..rag.pipeline import RAGPipeline
 from ..mcp_client.session import session_manager
+
+# Initialize logging
+setup_logging(
+    level=config.LOG_LEVEL,
+    log_file=config.LOG_FILE,
+    rich_output=config.LOG_RICH_OUTPUT
+)
 
 
 # 全局 Agent 实例

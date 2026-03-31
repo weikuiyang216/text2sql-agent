@@ -1,18 +1,52 @@
 """SQL execution tools for MCP Server."""
 
 import aiosqlite
+import logging
 from pathlib import Path
 from typing import Any
 
 from ..config import config
+from .sql_security import (
+    execute_sql_safe,
+    validate_sql,
+    SQLSecurityConfig,
+    SQLStatementType,
+    READ_ONLY_CONFIG,
+    READ_WRITE_CONFIG
+)
+
+logger = logging.getLogger(__name__)
 
 
 class SQLExecutorTools:
     """SQL 执行工具集"""
 
-    def __init__(self):
+    def __init__(self, allow_write: bool | None = None):
         self.current_db: str = config.DEFAULT_DATABASE
         self._db_path: Path = config.get_db_path(self.current_db)
+
+        # Use config default if not specified
+        allow_write_final = allow_write if allow_write is not None else config.SQL_ALLOW_WRITE
+
+        # Security config: read-only by default, or allow writes if configured
+        if allow_write_final:
+            self._security_config = SQLSecurityConfig(
+                allowed_types={SQLStatementType.SELECT, SQLStatementType.INSERT, SQLStatementType.UPDATE, SQLStatementType.DELETE},
+                max_rows=config.SQL_MAX_ROWS,
+                timeout_seconds=config.SQL_TIMEOUT_SECONDS,
+                allow_multiple=False,
+                max_sql_length=10000
+            )
+        else:
+            self._security_config = SQLSecurityConfig(
+                allowed_types={SQLStatementType.SELECT},
+                max_rows=config.SQL_MAX_ROWS,
+                timeout_seconds=config.SQL_TIMEOUT_SECONDS,
+                allow_multiple=False,
+                max_sql_length=10000
+            )
+
+        logger.info(f"SQL executor initialized: write_mode={allow_write_final}, max_rows={config.SQL_MAX_ROWS}")
 
     @property
     def db_path(self) -> Path:
@@ -118,38 +152,43 @@ class SQLExecutorTools:
         return "\n".join(lines)
 
     async def execute_sql(self, sql: str) -> dict[str, Any]:
-        """执行 SQL 查询并返回结果"""
-        if not self.db_path.exists():
-            return {"error": f"数据库文件不存在: {self.db_path}"}
+        """执行 SQL 查询并返回结果（带安全验证）
 
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # 执行 SQL
-                async with db.execute(sql) as cursor:
-                    # 检查是否有结果
-                    if cursor.description:
-                        columns = [d[0] for d in cursor.description]
-                        rows = await cursor.fetchall()
-                        return {
-                            "success": True,
-                            "columns": columns,
-                            "rows": [list(row) for row in rows],
-                            "row_count": len(rows)
-                        }
-                    else:
-                        # INSERT/UPDATE/DELETE 等操作
-                        await db.commit()
-                        return {
-                            "success": True,
-                            "message": f"执行成功，影响 {cursor.rowcount} 行",
-                            "row_count": cursor.rowcount
-                        }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "sql": sql
-            }
+        Args:
+            sql: SQL 语句
+
+        Returns:
+            执行结果，包含 success、columns、rows 等字段
+        """
+        logger.debug(f"Executing SQL on {self.current_db}: {sql[:100]}...")
+
+        # Use safe execution with security validation
+        result = await execute_sql_safe(
+            db_path=self.db_path,
+            sql=sql,
+            config=self._security_config
+        )
+
+        # Log execution result
+        if result.get("success"):
+            logger.info(f"SQL executed successfully: {result.get('row_count', 0)} rows")
+            if result.get("truncated"):
+                logger.warning(f"Result truncated: {result.get('total_rows')} total rows")
+        else:
+            logger.warning(f"SQL execution failed: {result.get('error')}")
+
+        return result
+
+    async def validate_sql(self, sql: str) -> dict[str, Any]:
+        """验证 SQL 是否安全可执行（不实际执行）
+
+        Args:
+            sql: SQL 语句
+
+        Returns:
+            验证结果
+        """
+        return validate_sql(sql, self._security_config).__dict__
 
     async def explain_schema(self, table_name: str | None = None) -> str:
         """用自然语言解释表结构"""
