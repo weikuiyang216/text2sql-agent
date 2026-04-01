@@ -362,6 +362,71 @@ results = parse_time_expressions("2024年第一季度的销售数据")
 ENABLE_QUERY_REWRITE=true  # 启用/禁用查询重写功能
 ```
 
+## SQL 错误自动修复
+
+当 SQL 执行失败时，系统会自动将错误信息反馈给大模型进行修复，最多重试 3 次。
+
+### 修复流程
+
+```
+SQL 执行失败
+    ↓
+记录错误信息
+    ↓
+获取数据库 Schema 上下文
+    ↓
+构建修复提示（含历史记录）
+    ↓
+LLM 生成修复后的 SQL
+    ↓
+重新执行 → 成功/继续重试
+```
+
+### 增强特性
+
+| 特性 | 说明 |
+|------|------|
+| Schema 上下文 | 修复时提供数据库结构，帮助模型识别正确的表名和字段名 |
+| 修复历史 | 记录每次失败的 SQL 和错误，避免重复相同错误 |
+| 智能引导 | 提示模型尝试不同的修复方案 |
+
+### 返回值
+
+执行结果中包含 `fix_info` 字段：
+
+```python
+{
+    "sql": "SELECT * FROM users",
+    "result": {...},
+    "success": True,
+    "fix_info": {
+        "attempts": 2,           # 修复尝试次数
+        "history": [             # 修复历史
+            {
+                "attempt": 1,
+                "sql": "SELECT * FROM user",
+                "error": "no such table: user"
+            }
+        ],
+        "final_success": True    # 最终是否成功
+    }
+}
+```
+
+### 示例
+
+```python
+from src.agent.core import Text2SQLAgent
+
+agent = Text2SQLAgent()
+
+# 自动修复模式（默认）
+result = await agent.chat("查询所有用户", auto_fix=True)
+
+# 禁用自动修复
+result = await agent.chat("查询所有用户", auto_fix=False)
+```
+
 ## 依赖
 
 ### 核心依赖
