@@ -116,10 +116,28 @@ class Text2SQLAgent:
         response = await self._call_llm(system_prompt, user_prompt)
         return extract_sql(response)
 
-    async def _fix_sql(self, sql: str, error: str, question: str) -> str:
-        """修复 SQL"""
-        prompt = build_fix_prompt(sql, error, question)
-        response = await self._call_llm("你是 SQL 专家。", prompt)
+    async def _fix_sql(
+        self,
+        sql: str,
+        error: str,
+        question: str,
+        schema_text: str | None = None,
+        fix_history: list | None = None
+    ) -> str:
+        """修复 SQL
+
+        Args:
+            sql: 执行失败的 SQL
+            error: 错误信息
+            question: 原始用户问题
+            schema_text: 数据库 Schema
+            fix_history: 之前的修复历史
+
+        Returns:
+            修复后的 SQL
+        """
+        prompt = build_fix_prompt(sql, error, question, schema_text, fix_history)
+        response = await self._call_llm("你是 SQL 专家，擅长分析和修复 SQL 错误。", prompt)
         return extract_sql(response)
 
     async def execute_sql(self, sql: str) -> dict:
@@ -137,11 +155,13 @@ class Text2SQLAgent:
 
         Returns:
             {
-                "sql": str,
-                "result": dict,
-                "explanation": str | None,
-                "success": bool,
-                "rewrite_info": dict | None  # 重写信息
+                "sql": str,              # 最终执行的 SQL
+                "result": dict,          # 执行结果
+                "explanation": str,      # 结果解释（可选）
+                "success": bool,         # 是否成功
+                "retries": int,          # 重试次数
+                "rewrite_info": dict,    # 查询重写信息（可选）
+                "fix_info": dict         # SQL 修复信息（可选）
             }
         """
         rewrite_info = None
@@ -174,10 +194,12 @@ class Text2SQLAgent:
         # 1. 生成 SQL
         sql = await self._generate_sql(processed_question)
 
-        # 2. 执行 SQL（带重试）
+        # 2. 执行 SQL（带重试和自动修复）
         result = None
         success = False
         retries = 0
+        fix_history: list[dict] = []  # 记录修复历史
+        schema_text = None  # 用于修复时提供上下文
 
         while retries < self.max_retries:
             result = await self.execute_sql(sql)
@@ -189,10 +211,46 @@ class Text2SQLAgent:
             if not auto_fix:
                 break
 
-            # 尝试修复
+            # 记录失败的尝试
             error_msg = result.get("error", "未知错误")
-            sql = await self._fix_sql(sql, error_msg, processed_question)
+            fix_history.append({
+                "attempt": retries + 1,
+                "sql": sql,
+                "error": error_msg
+            })
+
+            logger.warning(f"SQL execution failed (attempt {retries + 1}): {error_msg}")
+
+            # 获取 Schema 用于修复（只获取一次）
+            if schema_text is None:
+                try:
+                    schema_text = await self.get_schema_text()
+                except Exception as e:
+                    logger.warning(f"Failed to get schema for fix: {e}")
+
+            # 尝试修复 SQL
+            logger.info(f"Attempting to fix SQL (attempt {retries + 1})...")
+            sql = await self._fix_sql(
+                sql=sql,
+                error=error_msg,
+                question=processed_question,
+                schema_text=schema_text,
+                fix_history=fix_history
+            )
             retries += 1
+
+        # 构建修复信息
+        fix_info = None
+        if fix_history:
+            fix_info = {
+                "attempts": len(fix_history),
+                "history": fix_history,
+                "final_success": success
+            }
+            if success:
+                logger.info(f"SQL fixed successfully after {retries} attempts")
+            else:
+                logger.error(f"SQL fix failed after {retries} attempts")
 
         # 3. 可选解释
         explanation = None
@@ -216,7 +274,8 @@ class Text2SQLAgent:
             "explanation": explanation,
             "success": success,
             "retries": retries,
-            "rewrite_info": rewrite_info
+            "rewrite_info": rewrite_info,
+            "fix_info": fix_info
         }
 
     async def explain_result(self, sql: str, result: dict) -> str:

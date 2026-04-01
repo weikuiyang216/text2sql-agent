@@ -42,10 +42,33 @@ def build_user_prompt(question: str, conversation_history: list | None = None) -
     return prompt
 
 
-def build_fix_prompt(sql: str, error: str, question: str) -> str:
-    """构建 SQL 修复提示词"""
-    return f"""之前的 SQL 执行失败了，请分析错误并修复。
+def build_fix_prompt(
+    sql: str,
+    error: str,
+    question: str,
+    schema_text: str | None = None,
+    fix_history: list | None = None
+) -> str:
+    """构建 SQL 修复提示词
 
+    Args:
+        sql: 执行失败的 SQL
+        error: 错误信息
+        question: 原始用户问题
+        schema_text: 数据库 Schema（可选，提供更好的修复上下文）
+        fix_history: 之前的修复历史（可选，避免重复相同错误）
+    """
+    prompt_parts = ["之前的 SQL 执行失败了，请分析错误并修复。"]
+
+    # 添加 Schema 信息
+    if schema_text:
+        prompt_parts.append(f"""
+## 数据库 Schema
+{schema_text[:2000]}  # 限制长度避免过长
+""")
+
+    # 添加原始问题
+    prompt_parts.append(f"""
 ## 原始问题
 {question}
 
@@ -56,9 +79,32 @@ def build_fix_prompt(sql: str, error: str, question: str) -> str:
 
 ## 错误信息
 {error}
+""")
 
-请分析错误原因，并返回修正后的 SQL 语句。
-"""
+    # 添加修复历史
+    if fix_history:
+        history_text = "\n".join([
+            f"- 第{h['attempt']}次尝试: {h['sql']}\n  错误: {h['error']}"
+            for h in fix_history[-3:]  # 最近3次
+        ])
+        prompt_parts.append(f"""
+## 之前的修复尝试
+{history_text}
+
+注意：不要重复之前失败的修复方案，请尝试不同的方法。
+""")
+
+    prompt_parts.append("""
+## 修复要求
+1. 仔细分析错误信息，确定根本原因
+2. 检查表名和字段名是否正确（参考 Schema）
+3. 检查 SQL 语法是否符合 SQLite 规范
+4. 如果是字段名错误，尝试使用相似的字段名
+5. 只返回修正后的 SQL 语句，用 ```sql 包裹
+
+修正后的 SQL：""")
+
+    return "\n".join(prompt_parts)
 
 
 def build_explain_prompt(sql: str, result: dict) -> str:
