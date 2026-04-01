@@ -1,6 +1,6 @@
 """Text-to-SQL Agent core implementation."""
 
-import asyncio
+import logging
 from typing import Any
 
 from openai import AsyncOpenAI
@@ -15,6 +15,9 @@ from .prompts import (
     extract_sql
 )
 from .history import ConversationHistory, ConversationTurn
+from .query_rewriter import SQLQueryRewriter, parse_time_expressions
+
+logger = logging.getLogger(__name__)
 
 
 class Text2SQLAgent:
@@ -25,12 +28,14 @@ class Text2SQLAgent:
         api_base: str | None = None,
         api_key: str | None = None,
         model: str | None = None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        enable_query_rewrite: bool = True
     ):
         self.api_base = api_base or config.OPENAI_API_BASE
         self.api_key = api_key or config.OPENAI_API_KEY
         self.model = model or config.DEFAULT_MODEL
         self.max_retries = max_retries
+        self.enable_query_rewrite = enable_query_rewrite
 
         # LLM Client
         self.llm = AsyncOpenAI(
@@ -47,12 +52,24 @@ class Text2SQLAgent:
         # 当前数据库
         self.current_db = config.DEFAULT_DATABASE
 
+        # Query Rewriter
+        self._query_rewriter: SQLQueryRewriter | None = None
+
     async def _get_mcp(self) -> MCPClient:
         """获取 MCP Client（懒加载）"""
         if self._mcp is None:
             self._mcp = MCPClient()
             await self._mcp.connect()
         return self._mcp
+
+    def _get_query_rewriter(self) -> SQLQueryRewriter:
+        """获取 Query Rewriter（懒加载）"""
+        if self._query_rewriter is None:
+            self._query_rewriter = SQLQueryRewriter(
+                llm_client=self.llm,
+                model=self.model
+            )
+        return self._query_rewriter
 
     async def close(self):
         """关闭连接"""
@@ -123,11 +140,39 @@ class Text2SQLAgent:
                 "sql": str,
                 "result": dict,
                 "explanation": str | None,
-                "success": bool
+                "success": bool,
+                "rewrite_info": dict | None  # 重写信息
             }
         """
+        rewrite_info = None
+        processed_question = question
+
+        # 0. Query 重写（可选）
+        if self.enable_query_rewrite:
+            try:
+                rewriter = self._get_query_rewriter()
+                schema_text = await self.get_schema_text()
+                rewrite_result = await rewriter.rewrite(
+                    query=question,
+                    schema_text=schema_text,
+                    history=self.history.get_recent()
+                )
+
+                if rewrite_result.changes:
+                    rewrite_info = {
+                        "original": question,
+                        "rewritten": rewrite_result.rewritten,
+                        "changes": rewrite_result.changes,
+                        "time_expressions": rewrite_result.time_expressions,
+                        "entities": rewrite_result.entities
+                    }
+                    processed_question = rewrite_result.rewritten
+                    logger.info(f"Query rewritten: {question} -> {processed_question}")
+            except Exception as e:
+                logger.warning(f"Query rewrite failed: {e}")
+
         # 1. 生成 SQL
-        sql = await self._generate_sql(question)
+        sql = await self._generate_sql(processed_question)
 
         # 2. 执行 SQL（带重试）
         result = None
@@ -146,7 +191,7 @@ class Text2SQLAgent:
 
             # 尝试修复
             error_msg = result.get("error", "未知错误")
-            sql = await self._fix_sql(sql, error_msg, question)
+            sql = await self._fix_sql(sql, error_msg, processed_question)
             retries += 1
 
         # 3. 可选解释
@@ -170,7 +215,8 @@ class Text2SQLAgent:
             "result": result,
             "explanation": explanation,
             "success": success,
-            "retries": retries
+            "retries": retries,
+            "rewrite_info": rewrite_info
         }
 
     async def explain_result(self, sql: str, result: dict) -> str:

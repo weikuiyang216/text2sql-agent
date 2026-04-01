@@ -55,6 +55,9 @@ class Config:
     SQL_MAX_ROWS: int = int(os.getenv("SQL_MAX_ROWS", "1000"))
     SQL_TIMEOUT_SECONDS: float = float(os.getenv("SQL_TIMEOUT_SECONDS", "30.0"))
 
+    # Query 重写配置
+    ENABLE_QUERY_REWRITE: bool = os.getenv("ENABLE_QUERY_REWRITE", "true").lower() == "true"
+
     @classmethod
     def get_db_path(cls, db_name: str | None = None) -> Path:
         """获取数据库文件路径"""

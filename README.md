@@ -64,6 +64,9 @@ LOG_RICH_OUTPUT=true    # 控制台彩色输出
 SQL_ALLOW_WRITE=false   # 是否允许 INSERT/UPDATE/DELETE（默认只读）
 SQL_MAX_ROWS=1000       # 查询结果最大行数
 SQL_TIMEOUT_SECONDS=30  # SQL 执行超时时间（秒）
+
+# Query 重写配置
+ENABLE_QUERY_REWRITE=true  # 是否启用查询重写（时间转换、问题澄清）
 ```
 
 ## 快速开始
@@ -206,6 +209,7 @@ text2sql_agent/
 │   ├── mcp_client/             # MCP Client 模块
 │   ├── agent/                  # Agent 核心模块
 │   │   ├── core.py             # Text2SQL Agent
+│   │   ├── query_rewriter.py   # 查询重写（时间转换、问题澄清）
 │   │   ├── unified_core.py     # 统一 Agent (Function Calling)
 │   │   ├── tools.py            # 工具定义注册表
 │   │   ├── prompts.py          # Prompt 模板
@@ -306,6 +310,56 @@ await tools.execute_sql("DELETE FROM goods")    # ✗ 拒绝
 # 允许写操作
 tools = SQLExecutorTools(allow_write=True)
 await tools.execute_sql("INSERT INTO goods VALUES (...)")  # ✓ 允许
+```
+
+## 查询重写
+
+`src/agent/query_rewriter.py` 提供智能查询重写功能，优化用户输入以提高 SQL 生成质量。
+
+### 支持的时间表达式
+
+| 表达式类型 | 示例 | 转换结果 |
+|------------|------|----------|
+| 相对时间 | 今天、昨天、前天 | 具体日期 |
+| 时间偏移 | 最近7天、过去一个月 | 日期范围 |
+| 周期时间 | 本周、上周、本月 | 周期起止日期 |
+| 年度时间 | 今年、去年、明年 | 年度起止日期 |
+| 季度时间 | 2024年第一季度、Q2 | 季度日期范围 |
+| 具体日期 | 2024年1月15日 | 标准日期格式 |
+
+**示例**：
+
+```python
+from src.agent.query_rewriter import parse_time_expressions
+
+# 解析时间表达式
+results = parse_time_expressions("最近7天的订单")
+# [{'original': '最近7天', 'sql_value': {'start': "'2026-03-25'", 'end': "'2026-04-01'"}}]
+
+results = parse_time_expressions("2024年第一季度的销售数据")
+# [{'original': '2024年第一季度', 'sql_value': {'start': "'2024-01-01'", 'end': "'2024-03-31'"}}]
+```
+
+### 问题澄清
+
+当用户问题包含模糊指代时，系统会尝试澄清：
+
+```python
+# 对话历史：
+# Q: 查询电子产品的销售额
+# A: 电子产品的销售额为 100 万
+
+# 用户追问：
+# Q: 它的利润是多少？
+
+# 澄清后：
+# Q: 电子产品的利润是多少？
+```
+
+### 配置
+
+```env
+ENABLE_QUERY_REWRITE=true  # 启用/禁用查询重写功能
 ```
 
 ## 依赖
